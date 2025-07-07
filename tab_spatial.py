@@ -8,6 +8,12 @@ import os
 
 from common import DIR, FILES, PRIO_LV, PRIO_COL
 
+# ====== 关键补丁：保证云端一定出地图 ======
+import plotly.io as pio
+pio.templates.default = "plotly_dark"
+# 设置官方公开Mapbox token
+px.set_mapbox_access_token("pk.eyJ1IjoicGxvdGx5dXNlciIsImEiOiJjaWZ4dmFhOG8wMDU2dW9vY2dyd2Z6N3RjIn0.2dUAQKqKAF-6EMbbVfwn9w")
+
 def render(df: pd.DataFrame, blind_df: pd.DataFrame,
            hist_df: pd.DataFrame, ts_df: pd.DataFrame) -> None:
     # ---------- Sidebar ----------
@@ -81,33 +87,56 @@ def render(df: pd.DataFrame, blind_df: pd.DataFrame,
         view["std_ch4"] = pd.to_numeric(view["std_ch4"], errors="coerce").fillna(1.0)
         size_cap = np.nanpercentile(view["std_ch4"], 99) or 1.0
 
-        fig_map = px.scatter_mapbox(
-            view, lat="latitude", lon="longitude",
-            color="sampling_recommendation",
-            category_orders={"sampling_recommendation": PRIO_LV},
-            color_discrete_map=PRIO_COL,
-            size="std_ch4", size_max=15, zoom=4, height=560,
-            hover_data={
-                "grid_id": True, "priority_score": ":.3f", "std_ch4": ":.3f",
-                "trend_slope": ":.3f", "obs_count": True,
-                "outlier_count": True, "blind_spot_flag": True,
-            },
-        )
-        fig_map.update_traces(marker={"sizeref": size_cap / 20})
-        if not blind_df.empty and len(blind_df) > 0:
-            fig_map.add_trace(
-                go.Scattermapbox(
-                    lat=blind_df.latitude, lon=blind_df.longitude,
-                    name="Blind Zone", mode="markers",
-                    marker=dict(color="black", size=14, symbol="x"),
-                )
+        # —— 云端适配：优先用mapbox，异常时自动降级到open-street-map
+        map_style = "carto-positron"
+        try:
+            fig_map = px.scatter_mapbox(
+                view, lat="latitude", lon="longitude",
+                color="sampling_recommendation",
+                category_orders={"sampling_recommendation": PRIO_LV},
+                color_discrete_map=PRIO_COL,
+                size="std_ch4", size_max=15, zoom=4, height=560,
+                hover_data={
+                    "grid_id": True, "priority_score": ":.3f", "std_ch4": ":.3f",
+                    "trend_slope": ":.3f", "obs_count": True,
+                    "outlier_count": True, "blind_spot_flag": True,
+                },
             )
-        fig_map.update_layout(
-            mapbox_style="carto-positron",
-            margin=dict(l=0, r=0, t=0, b=0),
-            legend=dict(orientation="h", y=1.02),
-        )
-        st.plotly_chart(fig_map, use_container_width=True)
+            fig_map.update_traces(marker={"sizeref": size_cap / 20})
+            if not blind_df.empty and len(blind_df) > 0:
+                fig_map.add_trace(
+                    go.Scattermapbox(
+                        lat=blind_df.latitude, lon=blind_df.longitude,
+                        name="Blind Zone", mode="markers",
+                        marker=dict(color="black", size=14, symbol="x"),
+                    )
+                )
+            fig_map.update_layout(
+                mapbox_style=map_style,
+                margin=dict(l=0, r=0, t=0, b=0),
+                legend=dict(orientation="h", y=1.02),
+            )
+            st.plotly_chart(fig_map, use_container_width=True)
+        except Exception as e:
+            st.warning(f"Mapbox加载失败，自动降级为普通底图：{e}")
+            fig_map = px.scatter_mapbox(
+                view, lat="latitude", lon="longitude",
+                color="sampling_recommendation",
+                category_orders={"sampling_recommendation": PRIO_LV},
+                color_discrete_map=PRIO_COL,
+                size="std_ch4", size_max=15, zoom=4, height=560,
+                hover_data={
+                    "grid_id": True, "priority_score": ":.3f", "std_ch4": ":.3f",
+                    "trend_slope": ":.3f", "obs_count": True,
+                    "outlier_count": True, "blind_spot_flag": True,
+                },
+            )
+            fig_map.update_layout(
+                mapbox_style="open-street-map",
+                margin=dict(l=0, r=0, t=0, b=0),
+                legend=dict(orientation="h", y=1.02),
+            )
+            st.plotly_chart(fig_map, use_container_width=True)
 
     # ---------- Statistics ----------
     st.subheader("Priority Statistics")
@@ -187,4 +216,3 @@ def render(df: pd.DataFrame, blind_df: pd.DataFrame,
             st.code(open(path, encoding="utf-8").read(), language="markdown")
         except Exception:
             st.info("README missing or load error.")
-

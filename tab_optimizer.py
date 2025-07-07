@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # ======================================================================
-#  tab_optimizer.py  ·  “Sampling Optimizer” 业务子页面
+#  tab_optimizer.py  ·  “Sampling Optimizer” 业务子页面（稳定增强版）
+#  Author: CDL + ChatGPT 2025-07
 # ======================================================================
 from __future__ import annotations
-import json, pathlib, textwrap
+import json, pathlib, textwrap, time
 from dataclasses import dataclass
 
 import numpy as np

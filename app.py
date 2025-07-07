@@ -40,6 +40,10 @@ if TS_DF_PATH.exists():
 
     df, blind_df, hist_df, ts_df = st.session_state["datasets"]
     has_data = df is not None and not df.empty
+else:
+    # 这里初始化为空，防止后续报错
+    df = blind_df = hist_df = ts_df = None
+    has_data = False
 
 # ──────── 后台监控区 ────────
 MON_DIR = pathlib.Path("sampling_engine")

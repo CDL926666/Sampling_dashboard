@@ -20,4 +20,3 @@ python-dateutil
 requests
 pillow
 streamlit-autorefresh
-warnings

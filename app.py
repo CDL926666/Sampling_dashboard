@@ -4,14 +4,7 @@
 #  Author : CDL · 2025-07
 # ======================================================================
 from __future__ import annotations
-import time
 import streamlit as st
-import os, pathlib, json
-
-import tab_spatial
-import tab_optimizer
-import uploader
-from common import load_all, numeric_safe_cast
 
 # 1. 必须先 set_page_config
 st.set_page_config(
@@ -19,6 +12,14 @@ st.set_page_config(
     layout="wide",
     page_icon="🛰️",
 )
+
+import time
+import os, pathlib, json
+
+import tab_spatial
+import tab_optimizer
+import uploader
+from common import load_all, numeric_safe_cast
 
 # ──────── 关键数据文件检查 ────────
 DATA_DIR = pathlib.Path("ch4_sampling_result")

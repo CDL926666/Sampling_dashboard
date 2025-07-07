@@ -13,6 +13,9 @@ from __future__ import annotations
 import argparse, json, pathlib, random, sys
 import numpy as np
 import pandas as pd
+import warnings
+import numpy as np
+warnings.filterwarnings("ignore", category=UserWarning, module="numpy")
 
 # ────────── 路径与全局 ──────────
 DATA_DIR = pathlib.Path("ch4_sampling_result")

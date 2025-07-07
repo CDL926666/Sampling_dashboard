@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ======================================================================
-#  tab_optimizer.py  ·  “Sampling Optimizer” 业务子页面（稳定增强版）
+#  tab_optimizer.py  ·  “Sampling Optimizer” 业务子页面（云端兼容版）
 #  Author: CDL + ChatGPT 2025-07
 # ======================================================================
 from __future__ import annotations
@@ -40,11 +40,12 @@ _PDF_TMPL = Template(textwrap.dedent("""
     <ul>{% for d in cal %}<li>{{ d }}</li>{% endfor %}</ul>
 """))
 
+# ═════════════════════════ Dataclass ══════════════════════════════════
 @dataclass
 class SamplingContext:
-    gid:   str
-    eps:   float
-    w:     dict[str, float]
+    gid: str
+    eps: float
+    w: dict[str, float]
 
     @property
     def json_path(self) -> pathlib.Path:
@@ -55,62 +56,54 @@ class SamplingContext:
         return OUT_SAMPLING / f"bootstrap_{self.gid}.csv"
 
     def need_run(self, force: bool = False) -> bool:
-        if force or (not self.json_path.exists()) or (not self.csv_path.exists()):
+        if force or not (self.json_path.exists() and self.csv_path.exists()):
             return True
-        META = _load_json_cached(self.json_path)
-        if not META or "target_error_%" not in META:  # 防止损坏
+        meta = _load_json_cached(self.json_path)
+        if not meta or "target_error_%" not in meta:
             return True
-        if abs(META["target_error_%"] - self.eps) > 1e-6:
+        if abs(meta["target_error_%"] - self.eps) > 1e-6:
             return True
-        w_old = META.get("season_weight") or {"DJF": .25, "MAM": .25, "JJA": .25, "SON": .25}
+        w_old = meta.get("season_weight", {"DJF": .25, "MAM": .25, "JJA": .25, "SON": .25})
         return any(abs(self.w[k] - w_old.get(k, 0)) > 1e-4 for k in self.w)
 
+# ═════════════════════════ 缓存 I/O ══════════════════════════════════
 @st.cache_data(show_spinner=False)
 def _load_json_cached(p: pathlib.Path) -> dict:
     try:
         return json.loads(p.read_text(encoding="utf-8"))
-    except Exception as e:
-        st.warning(f"⚠️ 读取 JSON 失败: {p}  {e}")
+    except Exception:
         return {}
 
 @st.cache_data(show_spinner=False)
 def _load_csv_cached(p: pathlib.Path) -> pd.DataFrame:
     try:
-        df = pd.read_csv(p)
-        if df.empty:
-            st.warning(f"⚠️ CSV 为空: {p}")
-        return df
-    except Exception as e:
-        st.warning(f"⚠️ 读取 CSV 失败: {p}  {e}")
+        return pd.read_csv(p)
+    except Exception:
         return pd.DataFrame()
 
+# ═════════════════════════ 页面入口 ══════════════════════════════════
 def render(df: pd.DataFrame, ts_df: pd.DataFrame) -> None:
-    st.header("🧮 Sampling Optimizer  —  monthly mean · 95 % CI")
+    st.header("🧮 Sampling Optimizer — Monthly mean, 95 % CI")
 
     # ---------- Sidebar ----------
     with st.sidebar:
         st.subheader("Optimizer Settings")
         if df.empty:
-            st.error("没有主数据，无法优化抽样。")
-            return
-        grid_ids = sorted(df.grid_id.unique())
-        if not grid_ids:
-            st.error("当前主数据没有 grid_id，请检查数据。")
-            return
+            st.error("没有主数据，无法优化抽样。"); return
+        grid_ids = sorted(df.grid_id.unique().tolist())
         gid = st.selectbox("Grid ID", grid_ids, key="sel_gid")
         eps = st.slider("Target CI95 % error", 1, 20, 5, key="sel_eps")
         st.markdown("*Season weight (DJF / MAM / JJA / SON)*")
         w_vals = [st.number_input(s, 0.0, 1.0, 0.25, 0.05, key=f"w_{s}")
                   for s in ("DJF", "MAM", "JJA", "SON")]
-        w_sum  = sum(w_vals) or 1e-9
-        season_w = dict(zip(("DJF", "MAM", "JJA", "SON"),
-                            [w / w_sum for w in w_vals]))
+        w_sum = sum(w_vals) or 1e-9
+        season_w = dict(zip(("DJF", "MAM", "JJA", "SON"), [w / w_sum for w in w_vals]))
         st.caption(f"∑ weights = {w_sum:.3f}")
         force_run = st.button("↻  Re-calculate")
 
     ctx = SamplingContext(gid, eps, season_w)
 
-    # ---------- Run engine (如需) ----------
+    # ---------- Run engine ----------
     if ctx.need_run(force_run):
         with st.spinner("Bootstrap running … (may take 5-20 s)"):
             try:
@@ -119,41 +112,36 @@ def render(df: pd.DataFrame, ts_df: pd.DataFrame) -> None:
                 st.error(f"Sampling engine failed: {e}")
                 st.stop()
 
-    # ---------- 读取结果 ----------
+    # ---------- Load result ----------
     boot_df = _load_csv_cached(ctx.csv_path)
     info    = _load_json_cached(ctx.json_path)
     if boot_df.empty or not info:
-        st.error("❌ 该 grid 无可用结果数据，请尝试其它 grid_id 或重新运行采样。")
+        st.error("❌ 该 grid 没有可用结果，请尝试其它 grid_id 或重新运行采样。")
         return
-
-    # ---------- Debug ----------
-    st.caption(f"【DEBUG】当前 grid: {gid}, 结果数据行数: {len(boot_df)}")
-    st.caption(f"【DEBUG】info 内容: {info}")
 
     # ---------- CI95 – p 曲线 ----------
     try:
-        fig_ci = px.line(
-            boot_df, x="p", y="CI95_%", markers=True,
-            title="CI95 %  vs  sampling ratio (p)",
-        )
+        # 转 list 防兼容问题
+        x = boot_df["p"].tolist()
+        y = boot_df["CI95_%"].tolist()
+        fig_ci = go.Figure(go.Scatter(x=x, y=y, mode="lines+markers"))
         fig_ci.add_hline(y=eps, line_dash="dash", line_color="#d62728")
-        fig_ci.add_vline(x=info["p_star_%"] / 100, line_dash="dot",
-                         line_color="#2ca02c")
-        fig_ci.update_traces(hovertemplate="p = %{x:.2f}<br>CI95 = %{y:.2f} %")
+        fig_ci.add_vline(x=info["p_star_%"]/100, line_dash="dot", line_color="#2ca02c")
+        fig_ci.update_layout(title="CI95 %  vs  sampling ratio (p)",
+                             xaxis_title="p", yaxis_title="CI95 %")
         st.plotly_chart(fig_ci, use_container_width=True)
     except Exception as e:
         st.warning(f"曲线图绘制失败: {e}")
 
     # ---------- Bias Violin ----------
     try:
-        p_show = sorted(set([.10, .30, info["p_star_%"] / 100, 1.00]))
+        p_show = sorted({.10, .30, info["p_star_%"]/100, 1.00})
         viol_df = boot_df[boot_df["p"].isin(p_show)].copy()
-        viol_df["p_label"] = (viol_df["p"] * 100).round(1).astype(str) + " %"
+        viol_df["p_label"] = (viol_df["p"]*100).round(1).astype(str) + " %"
         if not viol_df.empty:
             fig_violin = px.violin(
                 viol_df, x="p_label", y="bias_%", box=True, points="all",
-                title="Bootstrap bias distribution",
-                labels={"bias_%": "Bias %"},
+                title="Bootstrap bias distribution", labels={"bias_%": "Bias %"}
             )
             st.plotly_chart(fig_violin, use_container_width=True)
     except Exception as e:
@@ -165,11 +153,9 @@ def render(df: pd.DataFrame, ts_df: pd.DataFrame) -> None:
         st.warning("⚠️ 原始时序缺失，无法重建序列。")
     else:
         try:
-            dates, vals_full = zip(*[x.split(",") for x in
-                                     sub.iloc[0].time_series.split("|")])
-            dates = pd.to_datetime(dates)
+            dates, vals_full = zip(*[x.split(",") for x in sub.iloc[0].time_series.split("|")])
+            dates = pd.to_datetime(dates).tolist()
             vals_full = list(map(float, vals_full))
-
             star_set = set(info.get("calendar", []))
             vals_star = [v if d.strftime("%Y-%m-%d") in star_set else None
                          for d, v in zip(dates, vals_full)]
@@ -178,7 +164,7 @@ def render(df: pd.DataFrame, ts_df: pd.DataFrame) -> None:
             fig_ts.add_trace(go.Scatter(x=dates, y=vals_full,
                                         name="Full series", line=dict(color="#8c8c8c")))
             fig_ts.add_trace(go.Scatter(x=dates, y=vals_star,
-                                        name=f"p★ ({info.get('p_star_%', '?')} %)",
+                                        name=f"p★ ({info.get('p_star_%','?')} %)",
                                         mode="markers+lines",
                                         marker=dict(color="#2ca02c", size=7)))
             fig_ts.update_layout(title="Time-series reconstruction (full vs p★)",
@@ -188,7 +174,7 @@ def render(df: pd.DataFrame, ts_df: pd.DataFrame) -> None:
             st.warning(f"时序图绘制失败: {e}")
 
     # ---------- Summary & Calendar ----------
-    if "p_star_%" in info and "expected_CI95_%" in info and "cost_saving_%" in info:
+    if all(k in info for k in ("p_star_%", "expected_CI95_%", "cost_saving_%")):
         st.success(
             f"**p★ = {info['p_star_%']} %**  "
             f"(CI95 ≈ {info['expected_CI95_%']:.2f} %, "
@@ -201,7 +187,7 @@ def render(df: pd.DataFrame, ts_df: pd.DataFrame) -> None:
             st.download_button(
                 "Download CSV",
                 "\n".join(info["calendar"]),
-                file_name=f"calendar_{gid}_{int(info.get('p_star_%',0))}pct.csv",
+                file_name=f"calendar_{gid}_{int(info['p_star_%'])}pct.csv",
             )
 
     # ---------- PDF Export ----------
@@ -217,8 +203,6 @@ def render(df: pd.DataFrame, ts_df: pd.DataFrame) -> None:
                 )
                 pdf_bytes = weasyprint.HTML(string=html).write_pdf()
                 st.download_button(
-                    "⬇️  Download PDF",
-                    data=pdf_bytes,
-                    file_name=f"sampling_{gid}.pdf",
-                    mime="application/pdf",
+                    "⬇️  Download PDF", pdf_bytes,
+                    file_name=f"sampling_{gid}.pdf", mime="application/pdf",
                 )

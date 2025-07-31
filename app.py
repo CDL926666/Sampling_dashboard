@@ -1,10 +1,9 @@
 # Y:\Bishe_project\app.py
 # 页面配置
-
+from __future__ import annotations
 import streamlit as st
 st.set_page_config(page_title="CH4 Scientific-Sampling Dashboard", layout="wide")
 
-from __future__ import annotations
 import os, json, time, pathlib
 import tab_spatial, tab_optimizer, uploader
 from common import load_all, numeric_safe_cast

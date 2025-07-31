@@ -1,154 +1,132 @@
-#!/usr/bin/env python3
-# ======================================================================
-#  app.py  ·  Three-Tab Entry  (Spatial / Optimizer / Upload)
-#  Author : CDL · 2025-07
-# ======================================================================
+# Y:\Bishe_project\app.py
+
 from __future__ import annotations
+import os, json, time, pathlib
 import streamlit as st
 
-# 1. 必须先 set_page_config
-st.set_page_config(
-    page_title="CH₄ Scientific-Sampling Dashboard",
-    layout="wide",
-    page_icon="🛰️",
-)
-
-import time
-import os, pathlib, json
-
-import tab_spatial
-import tab_optimizer
-import uploader
+import tab_spatial, tab_optimizer, uploader
 from common import load_all, numeric_safe_cast
 
-# ──────── 关键数据文件检查 ────────
-DATA_DIR = pathlib.Path("ch4_sampling_result")
+# 页面配置
+st.set_page_config(page_title="CH4 Scientific-Sampling Dashboard", layout="wide")
+
+# 常量
+DATA_DIR   = pathlib.Path("ch4_sampling_result")
 TS_DF_PATH = DATA_DIR / "ts_df.csv"
+MON_DIR    = pathlib.Path("sampling_engine")
+PROGRESS   = MON_DIR / "progress.json"
+PID_PATH   = MON_DIR / "pid.txt"
 
-has_data = False
-df = blind_df = hist_df = ts_df = None
+# Streamlit rerun（兼容不同版本）
+def safe_rerun():
+    if hasattr(st, "rerun"):
+        st.rerun()
+    elif hasattr(st, "experimental_rerun"):
+        st.experimental_rerun()
 
-if TS_DF_PATH.exists():
-    _fragment = getattr(st, "fragment", getattr(st, "experimental_fragment", None))
+# Session 初始化
+if "datasets" not in st.session_state:
+    st.session_state["datasets"] = (None, None, None, None)
+if "backend_info" not in st.session_state:
+    st.session_state["backend_info"] = {}
 
-    @_fragment  # type: ignore[arg-type]
-    def _load_data():
-        df_main, df_blind, df_hist, df_ts = load_all()
-        return numeric_safe_cast(df_main), df_blind, df_hist, df_ts
+# 数据加载
+def _load_main_data() -> tuple:
+    main, blind, hist, ts = load_all()
+    main = numeric_safe_cast(main) if main is not None else None
+    return main, blind, hist, ts
 
-    if "datasets" not in st.session_state:
-        st.session_state["datasets"] = _load_data()
+def refresh_dataset_cache(force: bool = False) -> None:
+    need = force or st.session_state["datasets"][0] is None \
+        or getattr(st.session_state["datasets"][0], "empty", True)
+    if need and TS_DF_PATH.exists():
+        st.session_state["datasets"] = _load_main_data()
 
-    df, blind_df, hist_df, ts_df = st.session_state["datasets"]
-    has_data = df is not None and not df.empty
-else:
-    # 这里初始化为空，防止后续报错
-    df = blind_df = hist_df = ts_df = None
-    has_data = False
-
-# ──────── 后台监控区 ────────
-MON_DIR = pathlib.Path("sampling_engine")
-PROGRESS = MON_DIR / "progress.json"
-LOG_PATH = MON_DIR / "progress.log"
-PID_PATH = MON_DIR / "pid.txt"
-
-if "refresh_key" not in st.session_state:
-    st.session_state["refresh_key"] = 0
-
-def manual_refresh():
-    st.session_state["refresh_key"] += 1
-
-with st.container():
-    c1, c2, c3 = st.columns([2, 4, 2])
-
-    with c1:
-        st.caption(f"🗂️ 当前工作目录：{os.getcwd()}")
-        result_dir = pathlib.Path("ch4_sampling_result")
-        result_files = list(result_dir.glob("*"))
-        st.caption(
-            f"📁 ch4_sampling_result/ 目录状态：{'存在' if result_dir.exists() else '缺失'}\n"
-            f"文件列表：\n" +
-            ("\n".join(f"  - {f.name}" for f in result_files) if result_files else "  （无文件）")
-        )
-
-    with c2:
-        st.caption("⏳ 后台进度 / 日志")
-        try:
-            if PROGRESS.exists():
-                info = json.loads(PROGRESS.read_text())
-                running_stage = info.get("stage")
-                st.write(f"**当前阶段：** {running_stage or '-'}")
-                if running_stage == 'Step-5':
-                    done = info.get('done', 0)
-                    total = info.get('total', 1)
-                    st.progress(done / max(total, 1))
-                ts = info.get('ts')
-                if ts:
-                    st.caption(f"更新时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))}")
-            else:
-                st.info("暂无后台进度记录。")
-        except Exception as e:
-            st.error(f"读取进度文件出错: {e}")
-
-        try:
-            if LOG_PATH.exists():
-                logs = LOG_PATH.read_text(encoding='utf-8', errors='ignore').splitlines()
-                if logs:
-                    st.code("\n".join(logs[-12:]), language="bash")
-        except Exception as e:
-            st.error(f"读取日志文件出错: {e}")
-
-    with c3:
-        st.caption("💻 进程控制")
+# 进程控制和状态
+def render_process_control() -> None:
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        st.caption("Process control")
         if PID_PATH.exists():
             try:
-                pid = PID_PATH.read_text().strip()
-                st.warning(f"后端运行中，PID={pid}")
-                if st.button("⛔ 强制终止后台任务"):
+                pid = int(PID_PATH.read_text().strip())
+                st.warning(f"Backend running, PID={pid}")
+                if st.button("Force terminate backend task"):
                     try:
-                        import os
-                        os.kill(int(pid), 9)
+                        os.kill(pid, 9)
                         PID_PATH.unlink(missing_ok=True)
                         PROGRESS.write_text(json.dumps({"stage": "FINISHED", "ts": time.time()}))
-                        st.success("已尝试终止后台任务。请刷新页面。")
+                        st.success("Backend killed, refresh the page.")
                     except Exception as e:
-                        st.error(f"终止失败：{e}")
+                        st.error(f"Terminate failed: {e}")
             except Exception as e:
-                st.error(f"读取 PID 文件出错: {e}")
+                st.error(f"Read PID failed: {e}")
         else:
-            st.success("后端空闲，可新任务上传。")
+            st.success("Backend idle. Ready for new upload.")
+    with col2:
+        if st.button("Refresh backend status"):
+            try:
+                if PROGRESS.exists():
+                    with open(PROGRESS, encoding="utf-8") as f:
+                        st.session_state["backend_info"] = json.load(f)
+                else:
+                    st.session_state["backend_info"] = {}
+            except Exception as e:
+                st.warning(f"Read progress.json failed: {e}")
+            if st.session_state["backend_info"].get("stage") == "FINISHED":
+                try:
+                    from streamlit.runtime.caching import cache_data
+                    cache_data.clear()
+                except Exception:
+                    pass
+                st.session_state["datasets"] = (None, None, None, None)
+                refresh_dataset_cache(force=True)
+            safe_rerun()
 
-    if st.button("🔄 手动刷新后台状态"):
-        manual_refresh()
+def main() -> None:
+    st.title("CH₄ Scientific-Sampling Dashboard")
+    render_process_control()
+    refresh_dataset_cache()
+    df, blind_df, hist_df, ts_df = st.session_state["datasets"]
+    has_data = df is not None and not df.empty
 
-_ = st.empty()
-_.text(f"刷新计数: {st.session_state['refresh_key']}")
-
-# ──────── Tab 布局 ────────
-if has_data:
-    tab_sp, tab_op, tab_up = st.tabs(
-        ["📌 Spatial Priority", "🧮 Sampling Optimizer", "📤 Upload"]
-    )
-else:
-    tab_up, tab_sp, tab_op = st.tabs(
-        ["📤 Upload", "📌 Spatial Priority", "🧮 Sampling Optimizer"]
-    )
-
-with tab_up:
-    uploader.render()
-    if not has_data:
-        st.info("📥 还没有数据，请先上传文件生成主数据。")
-
-with tab_sp:
     if has_data:
-        tab_spatial.render(df, blind_df, hist_df, ts_df)
+        tab_sp, tab_op, tab_up = st.tabs(["Spatial Priority", "Sampling Optimizer", "Upload"])
     else:
-        st.info("📥 请先在 “Upload” 页上传并生成主数据。")
+        tab_up, tab_sp, tab_op = st.tabs(["Upload", "Spatial Priority", "Sampling Optimizer"])
 
-with tab_op:
-    if has_data:
-        tab_optimizer.render(df, ts_df)
-    else:
-        st.info("📥 暂无主数据，完成上传及后台计算后再试。")
+    with tab_up:
+        try:
+            uploader.render()
+            if not has_data:
+                st.info("No data yet, please upload a file first.")
+        except Exception as e:
+            st.error(f"Uploader error: {e}")
 
-st.toast("Dashboard ready ✓" if has_data else "请先上传数据⚠️", icon="✅" if has_data else "ℹ️")
+    with tab_sp:
+        if has_data:
+            try:
+                tab_spatial.render(df, blind_df, hist_df, ts_df)
+            except Exception as e:
+                st.error(f"Spatial tab error: {e}")
+        else:
+            st.info("Need valid data, go to Upload tab first.")
+
+    with tab_op:
+        if has_data:
+            try:
+                tab_optimizer.render(df, ts_df)
+            except Exception as e:
+                st.error(f"Optimizer tab error: {e}")
+        else:
+            st.info("Need valid data, finish upload and backend steps first.")
+
+    st.toast("Dashboard ready." if has_data else "Awaiting data upload.")
+
+# 程序入口
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        st.error("A serious system error occurred, please refresh or contact the administrator.")
+        st.code(str(e))

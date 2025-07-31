@@ -1,24 +1,22 @@
-#!/usr/bin/env python3
-# ======================================================================
-#  common.py  ·  常量 / 数据加载 / 通用函数          v2025-07-06
-# ======================================================================
+# Y:\Bishe_project\common.py
+
 from __future__ import annotations
 
-import os, pathlib
+import os
+import pathlib
 import pandas as pd
 import numpy as np
 import streamlit as st
 
-# ───────────────────────── 路径 & 文件名 ──────────────────────────
-DIR_RESULTS   = pathlib.Path("ch4_sampling_result")   # 后端主结果目录
-DIR_ENGINE    = pathlib.Path("sampling_engine")       # 抽样引擎输出目录
+# 全局路径/文件名配置
+BASE_DIR = pathlib.Path(os.getenv("CH4_BASE_DIR", ".")).resolve()
+DIR_RESULTS = BASE_DIR / "ch4_sampling_result"
+DIR_ENGINE  = BASE_DIR / "sampling_engine"
 DIR_RESULTS.mkdir(exist_ok=True, parents=True)
-DIR_ENGINE.mkdir(exist_ok=True,  parents=True)
+DIR_ENGINE.mkdir(exist_ok=True, parents=True)
 
-# ★ 对旧代码的兼容别名（不要删） ------------------------------
-DIR          : pathlib.Path = DIR_RESULTS            # 旧脚本期望的名字
-OUT_SAMPLING : pathlib.Path = DIR_ENGINE             # tab_optimizer 里用
-# ---------------------------------------------------------------
+DIR: pathlib.Path = DIR_RESULTS
+OUT_SAMPLING: pathlib.Path = DIR_ENGINE
 
 FILES: dict[str, str] = {
     "main"  : "ALL_ch4_sampling_suggestion.csv",
@@ -28,9 +26,9 @@ FILES: dict[str, str] = {
     "readme": "ALL_ch4_sampling_suggestion_README.txt",
     "ts"    : "ts_df.csv",
 }
-REQUIRED: tuple[str, ...] = ("main", "ts")           # 缺一不可继续
+REQUIRED: tuple[str, ...] = ("main", "ts")
 
-# ───────────────────────── 视觉常量 ──────────────────────────
+# 采样优先级和配色
 PRIO_LV: list[str] = [
     "High Priority (Weekly Sampling)",
     "Medium Priority (Monthly Sampling)",
@@ -38,85 +36,102 @@ PRIO_LV: list[str] = [
     "Minimal Priority (Biannual)",
 ]
 PRIO_COL: dict[str, str] = {
-    PRIO_LV[0]: "#d73027",   # red
-    PRIO_LV[1]: "#fc8d59",   # orange
-    PRIO_LV[2]: "#91bfdb",   # light-blue
-    PRIO_LV[3]: "#4575b4",   # dark-blue
+    PRIO_LV[0]: "#ff0d00",
+    PRIO_LV[1]: "#ffc320",
+    PRIO_LV[2]: "#12a2fc",
+    PRIO_LV[3]: "#3abda5",
 }
 
-# ───────────────────────── I/O wrappers ─────────────────────────
+ANALYSIS_CONFIG: dict[str, dict] = {
+    "methane": {
+        "field_mean": "mean_ch4",
+        "field_std": "std_ch4",
+        "lat_col": "latitude",
+        "lon_col": "longitude",
+        "valid_range": (0, np.inf),
+    },
+}
+
+# 数据加载工具
+
 @st.cache_data(show_spinner=False)
 def _safe_read_csv(path: os.PathLike | str) -> pd.DataFrame:
-    """读 CSV，异常时返回空 DF 而不抛错。"""
     try:
         df = pd.read_csv(path, low_memory=False)
-        # 添加健壮性提示
         if df.empty:
-            st.warning(f"⚠️ 文件 {path} 读取成功，但内容为空。")
-        else:
-            st.info(f"✅ 读取 {path}: {df.shape[0]} 行, 列: {list(df.columns)}")
+            st.warning(f"File {path} read successfully, but is empty.")
         return df
     except Exception as e:
-        st.error(f"❌ 读取 {path} 失败: {e}")
+        st.error(f"Failed to read {path}: {e}")
         return pd.DataFrame()
 
 @st.cache_data(show_spinner=True)
-def load_all() -> tuple[pd.DataFrame, pd.DataFrame,
-                        pd.DataFrame, pd.DataFrame]:
-    """
-    统一读取所有结果文件。\n
-    输出顺序：`(main_df, blind_df, hist_df, ts_df)`\n
-    若关键文件缺失，会在 Streamlit 前端报错并返回 4×空 DF。
-    """
-    dfs = {k: _safe_read_csv(DIR_RESULTS / v) for k, v in FILES.items()}
+def load_all() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    main_df  = _safe_read_csv(DIR_RESULTS / FILES["main"])
+    blind_df = _safe_read_csv(DIR_RESULTS / FILES["blind"])
+    hist_df  = _safe_read_csv(DIR_RESULTS / FILES["hist"])
+    ts_df    = _safe_read_csv(DIR_RESULTS / FILES["ts"])
 
-    missing = [k for k in REQUIRED if dfs[k].empty]
-    if missing:
-        st.error("❌ 以下关键结果文件缺失或为空，请先运行后端脚本："
-                 + ", ".join(missing))
-        return tuple(pd.DataFrame() for _ in range(4))
-    # 增加调试输出
-    for k, df in dfs.items():
-        st.caption(f"【DEBUG】{k}: 形状={df.shape}, 字段={list(df.columns)}")
-        if not df.empty:
-            st.caption(df.head(2))
+    # 文本文件加载（只放入session_state，不参与返回）
+    for key in ("report", "readme"):
+        p = DIR_RESULTS / FILES[key]
+        if p.exists():
+            try:
+                st.session_state[f"txt_{key}"] = p.read_text(encoding="utf-8")
+            except Exception as e:
+                st.warning(f"Read {p.name} failed: {e}")
 
-    return dfs["main"], dfs["blind"], dfs["hist"], dfs["ts"]
+    if main_df.empty or ts_df.empty:
+        st.error("Key result files missing or empty, please run backend scripts first.")
+    return main_df, blind_df, hist_df, ts_df
 
-# ───────────────────────── 数据清洗 ─────────────────────────
 def numeric_safe_cast(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    将关键列安全转为数值型；**不会**修改原 DF，返回新对象。
-    """
     if df is None or df.empty:
-        st.warning("numeric_safe_cast: 输入为空表")
+        st.warning("numeric_safe_cast: input is empty DataFrame")
         return pd.DataFrame()
-
     out = df.copy()
     num_cols = [
         "latitude", "longitude", "mean_ch4", "std_ch4",
         "trend_slope", "priority_score", "obs_count", "outlier_count",
     ]
-    # 自动修正数字类型
     for col in num_cols:
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce")
-    # 提示缺失/异常列
     for col in num_cols:
         if col not in out.columns:
-            st.warning(f"⚠️ 缺少字段: {col}")
+            st.warning(f"Missing field: {col}")
 
-    # std_ch4 若缺失/为零 → 用最小非零替代，避免 0 导致 size_ref 为 0
     if "std_ch4" in out.columns:
         min_std = out.loc[out["std_ch4"] > 0, "std_ch4"].min() or 1.0
         out["std_ch4"] = out["std_ch4"].fillna(min_std).clip(lower=1e-3)
 
-    # 检查经纬度全空
-    if "latitude" in out.columns and "longitude" in out.columns:
-        null_lat = out["latitude"].isnull().sum()
-        null_lon = out["longitude"].isnull().sum()
-        st.caption(f"【DEBUG】latitude 缺失: {null_lat} / {len(out)}，longitude 缺失: {null_lon} / {len(out)}")
-        if null_lat == len(out) or null_lon == len(out):
-            st.error("❌ 所有经纬度都缺失，地图不会显示任何点。")
-
+    if {"latitude", "longitude"}.issubset(out.columns):
+        if out["latitude"].isnull().all() or out["longitude"].isnull().all():
+            st.error("All latitude/longitude missing, map will not show any points.")
     return out
+
+# 通用工具函数
+
+def haversine(lon1, lat1, lon2, lat2):
+    try:
+        if np.isnan([lon1, lat1, lon2, lat2]).any():  # type: ignore
+            return None
+        R = 6371000.0
+        phi1, phi2 = map(np.radians, (lat1, lat2))
+        dphi       = np.radians(lat2 - lat1)
+        dlambda    = np.radians(lon2 - lon1)
+        a = np.sin(dphi / 2) ** 2 + np.cos(phi1) * np.cos(phi2) * np.sin(dlambda / 2) ** 2
+        return 2 * R * np.arcsin(np.sqrt(a))
+    except Exception as e:
+        st.warning(f"haversine error: {e}")
+        return None
+
+def format_number(num, precision=3):
+    try:
+        if num is None or np.isnan(num):
+            return "-"
+        if abs(num) < 1e-2 or abs(num) > 1e4:
+            return f"{num:.{precision}e}"
+        return f"{num:,.{precision}f}"
+    except Exception:
+        return str(num)

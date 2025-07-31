@@ -1,39 +1,44 @@
-#!/usr/bin/env python3
-# ======================================================================
-#  run_all.py · v1.5.1  (UTF-8 hardening + Step-5 loop + progress monitor + range fix)
-#  Author  : CDL · 2025-07-07 改进版
-# ======================================================================
+# Y:\Bishe_project\PY3\run_all.py
+
 from __future__ import annotations
-import subprocess, sys, pathlib, os, time, re, json, atexit
+import subprocess
+import sys
+import pathlib
+import os
+import time
+import json
+import atexit
 
-# ─── 路径常量 ─────────────────────────────────────────────────────────
-ROOT      = pathlib.Path(__file__).resolve().parents[1]
-PY3_DIR   = ROOT / "PY3"
-ENGINE    = PY3_DIR / "step5_sampling_engine.py"
-PY        = sys.executable
-ENV       = {**os.environ, "PYTHONIOENCODING": "utf-8"}   # 子脚本也 UTF-8
+# 区域和采样参数
+EU_LAT_MIN, EU_LAT_MAX = 35.0, 72.0
+EU_LON_MIN, EU_LON_MAX = -25.0, 45.0
+DEFAULT_EPS = 5.0
+DEFAULT_BOOT = 1000
+DEFAULT_W = "0.25,0.25,0.25,0.25"
 
-# 监控文件
-MON_DIR   = ROOT / "sampling_engine"
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+PY3_DIR = ROOT / "PY3"
+PY = sys.executable
+ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+
+# 监控目录和状态文件
+MON_DIR = ROOT / "sampling_engine"
 MON_DIR.mkdir(exist_ok=True, parents=True)
-PROGRESS  = MON_DIR / "progress.json"
-LOG_PATH  = MON_DIR / "progress.log"
-PID_PATH  = MON_DIR / "pid.txt"
-
-# ─── 把自身 PID 写入文件，退出时删除 ────────────────────────────────
+PROGRESS = MON_DIR / "progress.json"
+LOG_PATH = MON_DIR / "progress.log"
+PID_PATH = MON_DIR / "pid.txt"
 PID_PATH.write_text(str(os.getpid()))
 atexit.register(lambda: PID_PATH.unlink(missing_ok=True))
 
-# ─── 简易写进度工具函数 ─────────────────────────────────────────────
+# 写入进度到json文件
 def write_progress(**kw):
-    """ kw: stage / grid / done / total / message """
     kw["ts"] = time.time()
     PROGRESS.write_text(json.dumps(kw, ensure_ascii=False))
 
-# ─── 设定经纬度范围过滤 ──────────────────────────────────────────────
+# 判断格点是否在有效范围
 def in_range(grid_id: str,
-             lat_min=49.4, lat_max=50.6,
-             lon_min=-4.6, lon_max=1.6) -> bool:
+             lat_min=EU_LAT_MIN, lat_max=EU_LAT_MAX,
+             lon_min=EU_LON_MIN, lon_max=EU_LON_MAX) -> bool:
     try:
         lat_str, lon_str = grid_id.split("_")
         lat, lon = float(lat_str), float(lon_str)
@@ -41,64 +46,84 @@ def in_range(grid_id: str,
     except Exception:
         return False
 
-# ─── 五大步骤脚本列表 ───────────────────────────────────────────────
+# 需要依次执行的步骤
 STEPS = [
-    ("Step-1  清洗",            PY3_DIR / "step1_load_and_clean.py"),
-    ("Step-2  趋势分析",        PY3_DIR / "step2_analysis.py"),
-    ("Step-3  Kriging/盲区",    PY3_DIR / "step3_kriging_blindzone.py"),
-    ("Step-4  Priority & 报告", PY3_DIR / "step4_priority_report.py"),
+    ("Step-1  Clean",        PY3_DIR / "step1_load_and_clean.py"),
+    ("Step-2  Analysis",     PY3_DIR / "step2_analysis.py"),
+    ("Step-3  Kriging",      PY3_DIR / "step3_kriging_blindzone.py"),
+    ("Step-4  Priority",     PY3_DIR / "step4_priority_report.py"),
 ]
 
-# ─── 统一运行子脚本的封装 ───────────────────────────────────────────
-def run(name: str, cmd: list[str]):
-    print(f"\n＝＝＝ {name} ＝＝＝")
-    write_progress(stage=name)                         # 写阶段进度
+# 调用子进程运行各步骤脚本
+def run_step(name: str, cmd: list[str]):
+    print(f"\n==== {name} ====")
+    write_progress(stage=name)
     proc = subprocess.Popen(
         cmd, cwd=ROOT, env=ENV,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace",
-        bufsize=1)
+        text=True, encoding="utf-8", errors="replace", bufsize=1)
     with open(LOG_PATH, "a", encoding="utf-8") as log_f:
         for ln in proc.stdout:
-            print(ln, end="")                          # 控制台
-            log_f.write(ln)                            # 写日志文件
+            print(ln, end="")
+            log_f.write(ln)
     if proc.wait():
         write_progress(stage=name, message="FAILED")
         sys.exit(f"{name} FAILED")
 
-# ─── Step-1 ~ Step-4 依次执行 ───────────────────────────────────────
+# 顺序执行所有主步骤
 for stage_name, script in STEPS:
-    run(stage_name, [PY, str(script)])
+    run_step(stage_name, [PY, str(script)])
 
-# ─── Step-5 采样引擎（多网格循环，范围限定） ─────────────────────────
-ts_csv = ROOT / "ch4_sampling_result/ts_df.csv"
 import pandas as pd
+ts_csv = ROOT / "ch4_sampling_result/ts_df.csv"
+if not ts_csv.exists():
+    sys.exit(f"ts_df.csv not found at {ts_csv}")
 grids = pd.read_csv(ts_csv, usecols=["grid_id"])["grid_id"].unique().tolist()
-print(f"\n＝＝＝ Step-5  Sampling Engine : {len(grids)} grids ＝＝＝")
+print(f"\n==== Step-5 Sampling Engine: {len(grids)} grids ====")
 write_progress(stage="Step-5", total=len(grids))
 
+ENGINE = PY3_DIR / "step5_sampling_engine.py"
+skipped = []
+successful = []
+
+# 按格点逐个采样
 for i, gid in enumerate(grids, 1):
     if not in_range(gid):
-        print(f"Grid {gid} 超出限定范围，跳过计算。")
-        # 写进度确保前端进度正确
+        print(f"Grid {gid} out of region, skipped.")
         write_progress(stage="Step-5", grid=gid, done=i, total=len(grids))
+        skipped.append({"grid_id": gid, "reason": "out_of_region"})
         continue
-
     t0 = time.perf_counter()
     write_progress(stage="Step-5", grid=gid, done=i, total=len(grids))
-    print(f"[{i:>3}/{len(grids)}] {gid}")
+    print(f"[{i:>4}/{len(grids)}] {gid} ...")
     try:
-        run(f"Sampling {gid}", [
+        run_step(f"Sampling {gid}", [
             PY, str(ENGINE),
-            "--grid_id", gid, "--eps", "5",
-            "--boot", "1000", "--w", "0.25,0.25,0.25,0.25"
+            "--grid_id", gid,
+            "--eps", str(DEFAULT_EPS),
+            "--boot", str(DEFAULT_BOOT),
+            "--w", DEFAULT_W
         ])
+        successful.append(gid)
+        print(f"    ✓ {gid}  {time.perf_counter()-t0:.1f}s")
     except Exception as e:
-        print(f"Sampling {gid} FAILED: {e}")
+        msg = f"Sampling {gid} failed: {e}"
+        print(f"Warning: {msg}")
         write_progress(stage="Step-5", grid=gid, done=i, total=len(grids), message="FAILED")
-        sys.exit(f"Sampling {gid} FAILED")
+        skipped.append({"grid_id": gid, "reason": str(e)})
+        continue
 
-    print(f"    ✓ {gid}  {time.perf_counter()-t0:.1f}s")
+# 统计并输出最终结果
+pd.DataFrame(skipped).to_csv(MON_DIR / "skipped_grids.csv", index=False)
+pd.DataFrame({"grid_id": successful}).to_csv(MON_DIR / "successful_grids.csv", index=False)
 
-print("\n✓ backend 5-step pipeline finished.")
+print(f"\nStep-5 Sampling summary:")
+print(f"  Grids completed: {len(successful)}")
+print(f"  Grids skipped/failed: {len(skipped)}")
+if skipped:
+    print("  See skipped_grids.csv for details.")
+if successful:
+    print("  See successful_grids.csv for completed grid IDs.")
+
+print("\n✓ Backend 5-step pipeline finished.")
 write_progress(stage="FINISHED")

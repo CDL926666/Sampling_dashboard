@@ -1,14 +1,13 @@
 # Y:\Bishe_project\app.py
+# 页面配置
+
+import streamlit as st
+st.set_page_config(page_title="CH4 Scientific-Sampling Dashboard", layout="wide")
 
 from __future__ import annotations
 import os, json, time, pathlib
-import streamlit as st
-
 import tab_spatial, tab_optimizer, uploader
 from common import load_all, numeric_safe_cast
-
-# 页面配置
-st.set_page_config(page_title="CH4 Scientific-Sampling Dashboard", layout="wide")
 
 # 常量
 DATA_DIR   = pathlib.Path("ch4_sampling_result")
